@@ -217,6 +217,13 @@ fn run_monitor(pane: &str, pid: u32) {
 
         if waiting {
             wait_polls += 1;
+            // Clear the "retrying X/Y..." label after one poll tick. The
+            // banner can linger in the pane buffer long after claude has
+            // accepted the "continue" — without this, the status bar sits
+            // on a stale "retrying..." for up to max_wait_polls (≈5 min).
+            if wait_polls == 1 {
+                set_state("");
+            }
             if detect_rate_limit(&text, &custom_patterns).is_none() || wait_polls >= max_wait_polls {
                 waiting = false;
                 wait_polls = 0;
