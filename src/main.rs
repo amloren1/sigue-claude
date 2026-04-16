@@ -246,8 +246,11 @@ fn run_in_new_tmux_session(args: &[String]) -> ExitCode {
 
     let self_exe = std::env::current_exe().unwrap_or_else(|_| "sigue-claude".into());
     let escaped_args: Vec<String> = args.iter().map(|a| shell_escape(a)).collect();
+    // When the inner sigue-claude exits (because claude exited), tmux will
+    // automatically destroy the session. No `exec $SHELL` — that would keep
+    // the session alive and create orphans.
     let inner_cmd = format!(
-        "CLAUDE_AUTO_RETRY_ACTIVE=1 {} {}; exec $SHELL",
+        "CLAUDE_AUTO_RETRY_ACTIVE=1 {} {}",
         shell_escape(&self_exe.to_string_lossy()),
         escaped_args.join(" ")
     );
@@ -282,6 +285,10 @@ fn print_help() {
     eprintln!("  Interactive (default) — runs inside tmux, monitors pane text");
     eprintln!("  Print (-p/--print)    — captures output, retries on limit");
     eprintln!();
+    eprintln!("Session management:");
+    eprintln!("  --list-sessions       list all sigue-claude tmux sessions");
+    eprintln!("  --cleanup             kill all sigue-claude tmux sessions");
+    eprintln!();
     eprintln!("Config: ~/.sigue-claude.json (optional)");
     eprintln!("  max_retries          — max attempts (default: 10)");
     eprintln!("  poll_interval_secs   — tmux poll frequency (default: 5)");
@@ -292,12 +299,63 @@ fn print_help() {
     eprintln!("  throttle_max_secs    — max backoff cap (default: 600)");
 }
 
+fn list_sigue_sessions() -> Vec<String> {
+    tmux::list_sessions()
+        .into_iter()
+        .filter(|s| s.starts_with("sigue-"))
+        .collect()
+}
+
+fn run_list_sessions() -> ExitCode {
+    let sessions = list_sigue_sessions();
+    if sessions.is_empty() {
+        println!("No sigue-claude sessions running.");
+    } else {
+        println!("Active sigue-claude sessions:");
+        for s in &sessions {
+            println!("  {s}");
+        }
+        println!();
+        println!("Attach:  tmux attach -t <name>");
+        println!("Kill:    tmux kill-session -t <name>");
+        println!("Kill all: sigue-claude --cleanup");
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_cleanup() -> ExitCode {
+    let sessions = list_sigue_sessions();
+    if sessions.is_empty() {
+        println!("No sigue-claude sessions to clean up.");
+        return ExitCode::SUCCESS;
+    }
+    let mut killed = 0;
+    for s in &sessions {
+        if tmux::kill_session(s) {
+            println!("Killed: {s}");
+            killed += 1;
+        } else {
+            eprintln!("Failed to kill: {s}");
+        }
+    }
+    println!("Cleaned up {killed}/{} session(s).", sessions.len());
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         return ExitCode::SUCCESS;
+    }
+
+    if args.iter().any(|a| a == "--list-sessions") {
+        return run_list_sessions();
+    }
+
+    if args.iter().any(|a| a == "--cleanup") {
+        return run_cleanup();
     }
 
     // Internal: monitor subprocess mode

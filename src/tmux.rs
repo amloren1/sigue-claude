@@ -61,3 +61,26 @@ pub fn attach_session(session_name: &str) -> std::io::Result<std::process::ExitS
         .args(["attach-session", "-t", session_name])
         .status()
 }
+
+/// List all tmux session names. Returns empty vec if tmux not running.
+pub fn list_sessions() -> Vec<String> {
+    let output = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|s| s.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Kill a tmux session by name. Returns true on success.
+pub fn kill_session(session_name: &str) -> bool {
+    Command::new("tmux")
+        .args(["kill-session", "-t", session_name])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}

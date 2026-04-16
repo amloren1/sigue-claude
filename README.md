@@ -67,9 +67,24 @@ sigue-claude -p "explain this codebase"
 
 ### How it works
 
-**Interactive mode** (default): Launches Claude inside a tmux session. A background monitor polls the terminal output every 5 seconds. When a rate limit is detected, it waits for the reset window and sends a retry message to resume the session.
+**Interactive mode** (default): Launches Claude inside a tmux session. A background monitor polls the terminal output every 5 seconds. When a rate limit is detected, it waits for the reset window and sends a retry message to resume the session. When Claude exits, the tmux session is destroyed automatically — no orphans.
 
 **Print mode** (`-p`/`--print`): Captures Claude's output directly. If a rate limit is detected in stdout/stderr, it waits and re-runs the command.
+
+### Session management
+
+If you detach from a session with `Ctrl-b d` (or it gets orphaned from an older version), use these commands:
+
+```bash
+# List active sigue-claude sessions
+sigue-claude --list-sessions
+
+# Kill all sigue-claude sessions
+sigue-claude --cleanup
+
+# Re-attach to a detached session
+tmux attach -t sigue-<pid>
+```
 
 ### What it detects
 
