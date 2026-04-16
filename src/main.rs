@@ -175,6 +175,11 @@ fn run_monitor(pane: &str, pid: u32) {
     let mut clean_polls = 0u32;
     let mut waiting = false;
     let mut wait_polls = 0u32;
+    // Set once we've exhausted max_retries. Stays true until clean output
+    // re-arms us. While set, we do nothing except watch for recovery —
+    // prevents the monitor from dying and leaving the status bar frozen
+    // on "max retries reached" after claude starts working again.
+    let mut paused_at_max = false;
     // After sending retry, allow this many polls before giving up waiting
     // for the rate limit text to clear (prevents getting stuck when the
     // old message stays visible on screen).
@@ -236,11 +241,18 @@ fn run_monitor(pane: &str, pid: u32) {
         match detect_rate_limit(&text, &custom_patterns) {
             None => {
                 clean_polls += 1;
-                if clean_polls >= clean_polls_to_reset && consecutive_retries > 0 {
-                    slog!(
-                        "Claude recovered. Resetting backoff (was at attempt {consecutive_retries})."
-                    );
+                if clean_polls >= clean_polls_to_reset
+                    && (consecutive_retries > 0 || paused_at_max)
+                {
+                    if paused_at_max {
+                        slog!("Claude recovered after max-retries pause. Re-arming.");
+                    } else {
+                        slog!(
+                            "Claude recovered. Resetting backoff (was at attempt {consecutive_retries})."
+                        );
+                    }
                     consecutive_retries = 0;
+                    paused_at_max = false;
                     set_state("");
                 }
                 thread::sleep(Duration::from_secs(config.poll_interval_secs));
@@ -249,12 +261,18 @@ fn run_monitor(pane: &str, pid: u32) {
                 clean_polls = 0;
                 consecutive_retries += 1;
                 if consecutive_retries > config.max_retries {
-                    slog!(
-                        "Max consecutive retries ({}) reached. Monitor stopping.",
-                        config.max_retries
-                    );
-                    set_state("sigue: max retries reached");
-                    return;
+                    // Stay alive but stop retrying. The None branch above
+                    // will re-arm us once claude produces clean output.
+                    if !paused_at_max {
+                        slog!(
+                            "Max consecutive retries ({}) reached — pausing until claude recovers.",
+                            config.max_retries
+                        );
+                        set_state("sigue: max retries — paused");
+                        paused_at_max = true;
+                    }
+                    thread::sleep(Duration::from_secs(config.poll_interval_secs));
+                    continue;
                 }
 
                 let max = config.max_retries;
