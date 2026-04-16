@@ -1,4 +1,5 @@
 mod config;
+mod logger;
 mod patterns;
 mod time;
 mod tmux;
@@ -25,10 +26,22 @@ fn is_print_mode(args: &[String]) -> bool {
 
 // ── Print mode: capture output, detect limits, retry ──
 
+// Log to file AND stderr (for print mode, where stderr doesn't interfere
+// with a TUI). Interactive monitor uses slog! (file only) instead.
+macro_rules! elog {
+    ($($arg:tt)*) => {{
+        let msg = format!($($arg)*);
+        eprintln!("[sigue] {msg}");
+        $crate::logger::log(&msg);
+    }};
+}
+
 fn run_print_mode(args: &[String]) -> ExitCode {
     let config = Config::load();
     let claude_bin = find_claude_binary();
     let mut retries = 0u32;
+
+    logger::cleanup_old_logs(7);
 
     loop {
         let result = Command::new(&claude_bin)
@@ -41,7 +54,7 @@ fn run_print_mode(args: &[String]) -> ExitCode {
         let output = match result {
             Ok(o) => o,
             Err(e) => {
-                eprintln!("[sigue] Failed to start claude: {e}");
+                elog!("Failed to start claude: {e}");
                 return ExitCode::from(1);
             }
         };
@@ -59,10 +72,7 @@ fn run_print_mode(args: &[String]) -> ExitCode {
             Some(detection) => {
                 retries += 1;
                 if retries > config.max_retries {
-                    eprintln!(
-                        "[sigue] Max retries ({}) reached. Giving up.",
-                        config.max_retries
-                    );
+                    elog!("Max retries ({}) reached. Giving up.", config.max_retries);
                     print!("{stdout}");
                     eprint!("{stderr}");
                     return ExitCode::from(1);
@@ -71,8 +81,8 @@ fn run_print_mode(args: &[String]) -> ExitCode {
                 let wait_secs = match detection.kind {
                     RateLimitKind::ServerThrottle => {
                         let backoff = config.throttle_backoff(retries);
-                        eprintln!(
-                            "[sigue] Server throttle detected. Backoff {backoff}s (attempt {retries}/{}).",
+                        elog!(
+                            "Server throttle detected. Backoff {backoff}s (attempt {retries}/{}).",
                             config.max_retries
                         );
                         backoff
@@ -84,8 +94,8 @@ fn run_print_mode(args: &[String]) -> ExitCode {
                             config.fallback_wait_secs,
                         );
                         let msg = detection.message.as_deref().unwrap_or("unknown reset time");
-                        eprintln!(
-                            "[sigue] Account limit hit: {msg}. Waiting {secs}s (attempt {retries}/{}).",
+                        elog!(
+                            "Account limit hit: {msg}. Waiting {secs}s (attempt {retries}/{}).",
                             config.max_retries
                         );
                         secs
@@ -116,8 +126,12 @@ fn run_monitor(pane: &str, pid: u32) {
     // clean output means Claude is working again.
     let clean_polls_to_reset = 6u32;
 
+    logger::cleanup_old_logs(7);
+    slog!("Monitor started (pane={pane}, pid={pid})");
+
     loop {
         if !tmux::process_alive(pid) {
+            slog!("Claude process exited. Monitor stopping.");
             return;
         }
 
@@ -129,7 +143,7 @@ fn run_monitor(pane: &str, pid: u32) {
             None => {
                 consecutive_errors += 1;
                 if consecutive_errors >= 10 {
-                    eprintln!("[sigue] Pane gone. Monitor exiting.");
+                    slog!("Pane gone. Monitor exiting.");
                     return;
                 }
                 thread::sleep(Duration::from_secs(config.poll_interval_secs));
@@ -151,8 +165,8 @@ fn run_monitor(pane: &str, pid: u32) {
             None => {
                 clean_polls += 1;
                 if clean_polls >= clean_polls_to_reset && consecutive_retries > 0 {
-                    eprintln!(
-                        "[sigue] Claude recovered. Resetting backoff (was at attempt {consecutive_retries})."
+                    slog!(
+                        "Claude recovered. Resetting backoff (was at attempt {consecutive_retries})."
                     );
                     consecutive_retries = 0;
                 }
@@ -162,8 +176,8 @@ fn run_monitor(pane: &str, pid: u32) {
                 clean_polls = 0;
                 consecutive_retries += 1;
                 if consecutive_retries > config.max_retries {
-                    eprintln!(
-                        "[sigue] Max consecutive retries ({}) reached. Monitor stopping.",
+                    slog!(
+                        "Max consecutive retries ({}) reached. Monitor stopping.",
                         config.max_retries
                     );
                     return;
@@ -172,8 +186,8 @@ fn run_monitor(pane: &str, pid: u32) {
                 let wait_secs = match detection.kind {
                     RateLimitKind::ServerThrottle => {
                         let backoff = config.throttle_backoff(consecutive_retries);
-                        eprintln!(
-                            "[sigue] Server throttle. Backoff {backoff}s (attempt {consecutive_retries}/{}).",
+                        slog!(
+                            "Server throttle. Backoff {backoff}s (attempt {consecutive_retries}/{}).",
                             config.max_retries
                         );
                         backoff
@@ -185,8 +199,8 @@ fn run_monitor(pane: &str, pid: u32) {
                             config.fallback_wait_secs,
                         );
                         let msg = detection.message.as_deref().unwrap_or("unknown reset time");
-                        eprintln!(
-                            "[sigue] Account limit: {msg}. Waiting {secs}s (attempt {consecutive_retries}/{}).",
+                        slog!(
+                            "Account limit: {msg}. Waiting {secs}s (attempt {consecutive_retries}/{}).",
                             config.max_retries
                         );
                         secs
@@ -202,10 +216,7 @@ fn run_monitor(pane: &str, pid: u32) {
                 tmux::send_keys(pane, &config.retry_message);
                 waiting = true;
                 wait_polls = 0;
-                eprintln!(
-                    "[sigue] Sent '{}' to pane {pane}.",
-                    config.retry_message
-                );
+                slog!("Sent '{}' to pane {pane}.", config.retry_message);
             }
         }
     }
@@ -285,9 +296,15 @@ fn print_help() {
     eprintln!("  Interactive (default) — runs inside tmux, monitors pane text");
     eprintln!("  Print (-p/--print)    — captures output, retries on limit");
     eprintln!();
-    eprintln!("Session management:");
+    eprintln!("Commands:");
     eprintln!("  --list-sessions       list all sigue-claude tmux sessions");
     eprintln!("  --cleanup             kill all sigue-claude tmux sessions");
+    eprintln!("  --status              show version, active sessions, log path");
+    eprintln!("  --logs                print today's log file");
+    eprintln!("  --version, -V         print version");
+    eprintln!("  --help, -h            show this help");
+    eprintln!();
+    eprintln!("Logs: ~/.sigue-claude/logs/YYYY-MM-DD.log (auto-rotates, 7-day retention)");
     eprintln!();
     eprintln!("Config: ~/.sigue-claude.json (optional)");
     eprintln!("  max_retries          — max attempts (default: 10)");
@@ -342,11 +359,58 @@ fn run_cleanup() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_logs() -> ExitCode {
+    let path = logger::today_log_path();
+    if !path.exists() {
+        println!("No logs for today yet.");
+        println!("Log dir: {}", logger::log_dir().display());
+        return ExitCode::SUCCESS;
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            print!("{contents}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Failed to read log: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run_status() -> ExitCode {
+    println!("sigue-claude v{}", env!("CARGO_PKG_VERSION"));
+    println!();
+    let sessions = list_sigue_sessions();
+    if sessions.is_empty() {
+        println!("Active sessions: none");
+    } else {
+        println!("Active sessions:");
+        for s in &sessions {
+            println!("  {s}");
+        }
+    }
+    println!();
+    println!("Log dir: {}", logger::log_dir().display());
+    let path = logger::today_log_path();
+    if path.exists() {
+        println!("Today's log: {}", path.display());
+    } else {
+        println!("Today's log: (none yet)");
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
+        return ExitCode::SUCCESS;
+    }
+
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("sigue-claude {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
 
@@ -356,6 +420,14 @@ fn main() -> ExitCode {
 
     if args.iter().any(|a| a == "--cleanup") {
         return run_cleanup();
+    }
+
+    if args.iter().any(|a| a == "--logs") {
+        return run_logs();
+    }
+
+    if args.iter().any(|a| a == "--status") {
+        return run_status();
     }
 
     // Internal: monitor subprocess mode

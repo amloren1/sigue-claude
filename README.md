@@ -46,9 +46,16 @@ set -g mouse on
 set -g history-limit 50000
 set -g default-terminal "screen-256color"
 set -sg escape-time 10
+
+# Mouse drag selection copies to system clipboard (macOS)
+# Tip: hold Option (⌥) while dragging for native terminal selection instead
+bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
+bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
 ```
 
 Reload with `tmux source-file ~/.tmux.conf`.
+
+On Linux, replace `pbcopy` with `xclip -selection clipboard` (X11) or `wl-copy` (Wayland).
 
 ## Usage
 
@@ -76,14 +83,19 @@ sigue-claude -p "explain this codebase"
 If you detach from a session with `Ctrl-b d` (or it gets orphaned from an older version), use these commands:
 
 ```bash
-# List active sigue-claude sessions
-sigue-claude --list-sessions
+sigue-claude --list-sessions   # List active sigue-claude sessions
+sigue-claude --cleanup         # Kill all sigue-claude sessions
+tmux attach -t sigue-<pid>     # Re-attach to a detached session
+```
 
-# Kill all sigue-claude sessions
-sigue-claude --cleanup
+### Logs and status
 
-# Re-attach to a detached session
-tmux attach -t sigue-<pid>
+Monitor activity is written to `~/.sigue-claude/logs/YYYY-MM-DD.log` (not stderr, to avoid interfering with Claude's TUI). Logs auto-rotate daily and clean up after 7 days.
+
+```bash
+sigue-claude --logs      # Print today's log
+sigue-claude --status    # Show version, active sessions, log path
+sigue-claude --version   # Print version
 ```
 
 ### What it detects
