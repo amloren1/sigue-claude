@@ -444,7 +444,7 @@ fn print_help() {
     eprintln!("Logs: ~/.sigue-claude/logs/YYYY-MM-DD.log (auto-rotates, 7-day retention)");
     eprintln!();
     eprintln!("Config: ~/.sigue-claude.json (optional)");
-    eprintln!("  max_retries          — max attempts (default: 10)");
+    eprintln!("  max_retries          — max attempts (default: 20)");
     eprintln!("  poll_interval_secs   — tmux poll frequency (default: 5)");
     eprintln!("  margin_secs          — extra wait after reset (default: 60)");
     eprintln!("  fallback_wait_secs   — wait when time unparseable (default: 300)");

@@ -27,7 +27,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_retries: 10,
+            max_retries: 20,
             poll_interval_secs: 5,
             margin_secs: 60,
             fallback_wait_secs: 300, // 5 minutes

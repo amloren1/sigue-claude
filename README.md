@@ -143,7 +143,7 @@ Optional. Create `~/.sigue-claude.json`:
 
 ```json
 {
-  "max_retries": 10,
+  "max_retries": 20,
   "poll_interval_secs": 5,
   "margin_secs": 60,
   "fallback_wait_secs": 300,
@@ -155,7 +155,7 @@ Optional. Create `~/.sigue-claude.json`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `max_retries` | `10` | Max consecutive retry attempts before giving up |
+| `max_retries` | `20` | Max consecutive retry attempts before giving up |
 | `poll_interval_secs` | `5` | How often to check tmux pane for rate limits (seconds) |
 | `margin_secs` | `60` | Extra wait after parsed reset time (seconds) |
 | `fallback_wait_secs` | `300` | Wait when reset time can't be parsed (seconds) |
