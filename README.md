@@ -78,6 +78,24 @@ sigue-claude -p "explain this codebase"
 
 **Print mode** (`-p`/`--print`): Captures Claude's output directly. If a rate limit is detected in stdout/stderr, it waits and re-runs the command.
 
+### Live status in the tmux status bar
+
+During a wait, sigue shows a yellow badge in the bottom-right of the tmux status bar with a live countdown:
+
+- `sigue: throttle retry 1/10 in 28s` — server throttle backoff
+- `sigue: limit retry 1/10 in 4h30m` — account limit wait
+- `sigue: retrying 1/10...` — briefly after sending "continue"
+- `sigue: paused (fg=zsh)` — claude isn't the foreground process (you suspended it)
+
+When claude is working normally, the badge disappears.
+
+### Smart behavior
+
+- **Backoff resets on recovery**: after ~30s of clean output, the retry counter goes back to 1. Unrelated rate limit events don't escalate each other's backoff.
+- **Skips spurious retries**: if claude recovers during the wait — either naturally or because you manually typed "continue" — sigue re-checks the pane when the timer ends and skips the retry.
+- **Foreground-safe**: won't send "continue" if claude isn't the active process in the pane (e.g. you Ctrl-Z'd it). It pauses and waits for claude to come back.
+- **Background-friendly**: detaching from tmux (`Ctrl-b d`) doesn't affect monitoring. Sigue keeps retrying whether or not you're watching.
+
 ### Session management
 
 If you detach from a session with `Ctrl-b d` (or it gets orphaned from an older version), use these commands:
@@ -105,6 +123,14 @@ sigue-claude --version   # Print version
 | Server throttle (Type 2b) | *"Server is temporarily limiting requests"* | Exponential backoff (30s base, 10m cap) |
 | Account limit | *"You've hit your 5-hour limit, resets 3pm"* | Parses reset time, waits + 60s margin |
 | HTTP 429 | *"Error 429 Too Many Requests"* | Exponential backoff |
+
+Reset times are parsed with full timezone awareness:
+
+- Relative: `try again in 2 hours`, `resets in 30 minutes`
+- Absolute UTC: `resets 3pm (UTC)`
+- Named IANA zones: `resets 3pm (Europe/Dublin)`, `(Asia/Kolkata)`, `(America/New_York)`
+- US abbreviations: `(EST)`, `(PST)`, `(CST)`, `(MST)` and daylight variants
+- Half-hour offsets (India, Iran) and DST transitions are handled correctly via real `DateTime` arithmetic.
 
 ## Configuration
 
