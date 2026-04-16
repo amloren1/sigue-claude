@@ -268,6 +268,22 @@ fn run_monitor(pane: &str, pid: u32) {
                     return;
                 }
 
+                // Re-check the pane: while we were waiting, claude may have
+                // recovered on its own, or the user may have resumed the
+                // session manually. Sending "continue" now would be spurious
+                // input into whatever claude is currently doing.
+                let fresh = tmux::capture_pane(pane).unwrap_or_default();
+                if detect_rate_limit(&fresh, &custom_patterns).is_none() {
+                    slog!(
+                        "Rate limit gone after wait — claude recovered on its own, skipping retry."
+                    );
+                    set_state("");
+                    // Don't set waiting=true — nothing to wait for. Treat
+                    // this as a normal recovery so the next detection
+                    // starts fresh.
+                    continue;
+                }
+
                 // Safety: only send retry keys if claude is still the
                 // foreground process in the pane. If the user suspended
                 // claude (Ctrl-Z) or switched tasks, sending "continue"

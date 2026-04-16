@@ -137,8 +137,12 @@ pub fn set_sigue_state(session: &str, state: &str) {
 /// Configure a session's status bar to show sigue state.
 /// Shows state (with a visible prefix when active) + time on the right.
 pub fn configure_status_bar(session: &str) {
-    // status-right shows sigue state (yellow when active) then time
-    let status_right = "#{?#{==:#{@sigue_state},},,#[fg=black,bg=yellow,bold] #{@sigue_state} #[default] }%H:%M";
+    // Style attributes use spaces (not commas) because the whole thing
+    // is nested inside a #{?cond,then,else} conditional — using commas
+    // in the style spec would confuse tmux's format parser and cause
+    // the literal text "#[fg=black,bg=yellow,bold]" to appear in the bar.
+    let status_right =
+        "#{?#{@sigue_state},#[bg=yellow fg=black bold] #{@sigue_state} #[default] ,}%H:%M";
     let cmds: &[&[&str]] = &[
         &["set-option", "-t", session, "status", "on"],
         &["set-option", "-t", session, "status-right-length", "120"],
