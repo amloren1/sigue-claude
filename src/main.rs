@@ -102,9 +102,19 @@ fn run_print_mode(args: &[String]) -> ExitCode {
 
 fn run_monitor(pane: &str, pid: u32) {
     let config = Config::load();
-    let mut retries = 0u32;
+    let mut consecutive_retries = 0u32;
     let mut consecutive_errors = 0u32;
+    let mut clean_polls = 0u32;
     let mut waiting = false;
+    let mut wait_polls = 0u32;
+    // After sending retry, allow this many polls before giving up waiting
+    // for the rate limit text to clear (prevents getting stuck when the
+    // old message stays visible on screen).
+    let max_wait_polls = 60; // 60 * poll_interval = 5 min at default
+    // Number of consecutive clean polls needed to consider Claude "recovered"
+    // and reset the backoff. At default 5s poll interval, 6 polls = 30s of
+    // clean output means Claude is working again.
+    let clean_polls_to_reset = 6u32;
 
     loop {
         if !tmux::process_alive(pid) {
@@ -128,8 +138,10 @@ fn run_monitor(pane: &str, pid: u32) {
         };
 
         if waiting {
-            if detect_rate_limit(&text).is_none() {
+            wait_polls += 1;
+            if detect_rate_limit(&text).is_none() || wait_polls >= max_wait_polls {
                 waiting = false;
+                wait_polls = 0;
             }
             thread::sleep(Duration::from_secs(config.poll_interval_secs));
             continue;
@@ -137,13 +149,21 @@ fn run_monitor(pane: &str, pid: u32) {
 
         match detect_rate_limit(&text) {
             None => {
+                clean_polls += 1;
+                if clean_polls >= clean_polls_to_reset && consecutive_retries > 0 {
+                    eprintln!(
+                        "[sigue] Claude recovered. Resetting backoff (was at attempt {consecutive_retries})."
+                    );
+                    consecutive_retries = 0;
+                }
                 thread::sleep(Duration::from_secs(config.poll_interval_secs));
             }
             Some(detection) => {
-                retries += 1;
-                if retries > config.max_retries {
+                clean_polls = 0;
+                consecutive_retries += 1;
+                if consecutive_retries > config.max_retries {
                     eprintln!(
-                        "[sigue] Max retries ({}) reached. Monitor stopping.",
+                        "[sigue] Max consecutive retries ({}) reached. Monitor stopping.",
                         config.max_retries
                     );
                     return;
@@ -151,8 +171,11 @@ fn run_monitor(pane: &str, pid: u32) {
 
                 let wait_secs = match detection.kind {
                     RateLimitKind::ServerThrottle => {
-                        let backoff = config.throttle_backoff(retries);
-                        eprintln!("[sigue] Server throttle. Backoff {backoff}s.");
+                        let backoff = config.throttle_backoff(consecutive_retries);
+                        eprintln!(
+                            "[sigue] Server throttle. Backoff {backoff}s (attempt {consecutive_retries}/{}).",
+                            config.max_retries
+                        );
                         backoff
                     }
                     RateLimitKind::AccountLimit => {
@@ -162,7 +185,10 @@ fn run_monitor(pane: &str, pid: u32) {
                             config.fallback_wait_secs,
                         );
                         let msg = detection.message.as_deref().unwrap_or("unknown reset time");
-                        eprintln!("[sigue] Account limit: {msg}. Waiting {secs}s.");
+                        eprintln!(
+                            "[sigue] Account limit: {msg}. Waiting {secs}s (attempt {consecutive_retries}/{}).",
+                            config.max_retries
+                        );
                         secs
                     }
                 };
@@ -175,6 +201,7 @@ fn run_monitor(pane: &str, pid: u32) {
 
                 tmux::send_keys(pane, &config.retry_message);
                 waiting = true;
+                wait_polls = 0;
                 eprintln!(
                     "[sigue] Sent '{}' to pane {pane}.",
                     config.retry_message

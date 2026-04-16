@@ -2,7 +2,12 @@
 name = "sigue-claude"
 version = "0.1.0"
 edition = "2024"
-description = "Sigue — auto-retry wrapper for Claude Code rate limits"
+description = "Auto-retry wrapper for Claude Code rate limits"
+license = "MIT"
+repository = "https://github.com/amloren1/sigue-claude"
+readme = "README.md"
+keywords = ["claude", "rate-limit", "retry", "cli", "tmux"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 regex = "1"
