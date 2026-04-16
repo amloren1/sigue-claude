@@ -12,15 +12,21 @@ static STANDALONE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     ]
 });
 
-/// Patterns indicating the user hit their account/usage limit.
+/// Patterns indicating the user has actually hit their account/usage limit.
+/// Every pattern requires an action word (hit/exceeded/reached/over) — the
+/// mere mention of "rate limit" or a "5-hour" window in claude's progress
+/// bar is NOT enough to trigger a retry. Something has to have happened.
 static LIMIT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
-        Regex::new(r"(?i)(?:hit|exceeded|reached).*(?:your|the)\s*(?:\d+-hour\s+)?limit").unwrap(),
-        Regex::new(r"(?i)\d+-hour limit").unwrap(),
-        Regex::new(r"(?i)limit reached").unwrap(),
-        Regex::new(r"(?i)usage limit").unwrap(),
-        Regex::new(r"(?i)out of.*usage").unwrap(),
-        Regex::new(r"(?i)rate limit").unwrap(),
+        // "you've hit your 5-hour limit", "exceeded the limit", etc.
+        Regex::new(r"(?i)(?:hit|exceeded|reached|over)\s+(?:your|the)\s+(?:\d+-hour\s+)?(?:usage\s+|rate\s+)?limit")
+            .unwrap(),
+        // "rate limit reached", "usage limit exceeded", "limit reached"
+        Regex::new(r"(?i)(?:usage|rate|request)?\s*limit\s+(?:reached|exceeded|hit)").unwrap(),
+        // "you've reached ..." / "you have hit ..."
+        Regex::new(r"(?i)(?:you've|you\s+have)\s+(?:hit|exceeded|reached)\s+(?:your|the)").unwrap(),
+        // "out of usage", "out of requests"
+        Regex::new(r"(?i)out of\s+(?:usage|requests|quota|tokens)").unwrap(),
     ]
 });
 
@@ -28,7 +34,8 @@ static LIMIT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 static RESET_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         Regex::new(r"(?i)resets?\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?").unwrap(),
-        Regex::new(r"(?i)resets?\s+in[:\s]\s*\d").unwrap(),
+        // Relative shorthand — "resets in 2h", "resets 1h27m", "resets 5m"
+        Regex::new(r"(?i)resets?\s+(?:in\s+)?\d+\s*(?:hours?|minutes?|h|m)").unwrap(),
         Regex::new(r"(?i)try again in \d+\s*(?:hours?|minutes?|h|m)").unwrap(),
     ]
 });
@@ -175,6 +182,23 @@ mod tests {
         let result = detect_rate_limit(text, &custom).unwrap();
         assert_eq!(result.kind, RateLimitKind::AccountLimit);
         assert!(result.message.unwrap().contains("quota exhausted"));
+    }
+
+    #[test]
+    fn progress_bar_alone_is_not_a_rate_limit() {
+        // Regression: claude's normal TUI shows a progress bar like
+        // "5h [####-----] 32% resets 1h27m" while you're well within
+        // the window. This is NOT a rate limit — detection must not fire.
+        let text = "5h [######--------------] 32% resets 1h27m  7d [##------------------] 12%";
+        assert!(detect_rate_limit(text, &[]).is_none());
+    }
+
+    #[test]
+    fn text_mentioning_limit_without_action_is_not_a_rate_limit() {
+        // "rate limit" or "usage limit" as descriptive phrases (e.g. in
+        // docs, code, or conversational text) should not trigger.
+        let text = "The rate limit for this endpoint is 5 requests per second.";
+        assert!(detect_rate_limit(text, &[]).is_none());
     }
 
     #[test]

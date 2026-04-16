@@ -15,9 +15,22 @@ static RESET_AT_RE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+// Matches relative reset times in several forms:
+//   resets in 2 hours
+//   resets 1h27m          (claude's progress bar shorthand)
+//   try again in 30 minutes
+//   resets 5m
+//   resets 2h
+// Captures:
+//   1: leading number
+//   2: hour unit (hours|hour|h)        — present if hour form
+//   3: optional trailing minutes after "Xh"
+//   4: minute unit (minutes|minute|m)  — present if minute-only form
 static RESET_IN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:resets?\s+in|try again in)[:\s]\s*(\d+)\s*(hours?|minutes?|h|m)")
-        .unwrap()
+    Regex::new(
+        r"(?i)(?:resets?|try again)(?:\s+in)?\s*[:\s]?\s*(\d+)\s*(?:(hours?|h)(?:\s*(\d+)\s*(?:minutes?|m))?|(minutes?|m))",
+    )
+    .unwrap()
 });
 
 /// Parse a reset time from screen text and return wait duration in seconds.
@@ -34,14 +47,20 @@ pub fn parse_wait_seconds(text: &str, margin_secs: u64, fallback_secs: u64) -> u
 
 fn try_parse_relative(text: &str) -> Option<u64> {
     let caps = RESET_IN_RE.captures(text)?;
-    let amount: u64 = caps[1].parse().ok()?;
-    let unit = &caps[2];
-    let secs = if unit.starts_with('h') {
-        amount * 3600
-    } else {
-        amount * 60
-    };
-    Some(secs)
+    let n: u64 = caps[1].parse().ok()?;
+    // Hour form (with optional trailing minutes): "1h27m", "2 hours", "1h"
+    if caps.get(2).is_some() {
+        let mins: u64 = caps
+            .get(3)
+            .and_then(|m| m.as_str().parse().ok())
+            .unwrap_or(0);
+        return Some(n * 3600 + mins * 60);
+    }
+    // Minute-only form: "30 minutes", "5m"
+    if caps.get(4).is_some() {
+        return Some(n * 60);
+    }
+    None
 }
 
 /// A timezone spec — either a named IANA zone, UTC, or the user's local time.
@@ -170,6 +189,34 @@ mod tests {
     fn parse_relative_shorthand() {
         let secs = try_parse_relative("resets in: 5m").unwrap();
         assert_eq!(secs, 300);
+    }
+
+    #[test]
+    fn parse_compound_shorthand() {
+        // Claude's progress-bar form: "resets 1h27m"
+        let secs = try_parse_relative("5h [####-----] 32% resets 1h27m  7d").unwrap();
+        assert_eq!(secs, 3600 + 27 * 60);
+    }
+
+    #[test]
+    fn parse_bare_hour_shorthand() {
+        let secs = try_parse_relative("resets 2h").unwrap();
+        assert_eq!(secs, 7200);
+    }
+
+    #[test]
+    fn parse_bare_minute_shorthand() {
+        let secs = try_parse_relative("resets 45m").unwrap();
+        assert_eq!(secs, 45 * 60);
+    }
+
+    #[test]
+    fn compound_shorthand_beats_absolute_parse() {
+        // Regression: "resets 1h27m" used to fall through to the
+        // absolute-time parser and get interpreted as 1:00, which then
+        // rolled to 1 AM tomorrow — a ~15h wait instead of the real 1h27m.
+        let secs = parse_wait_seconds("limit, resets 1h27m", 0, 99999);
+        assert_eq!(secs, 3600 + 27 * 60);
     }
 
     #[test]

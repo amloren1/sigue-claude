@@ -127,6 +127,7 @@ sigue-claude --version   # Print version
 Reset times are parsed with full timezone awareness:
 
 - Relative: `try again in 2 hours`, `resets in 30 minutes`
+- Compound shorthand: `resets 1h27m`, `resets 2h`, `resets 45m` (the form claude shows in its progress-bar overlay)
 - Absolute UTC: `resets 3pm (UTC)`
 - Named IANA zones: `resets 3pm (Europe/Dublin)`, `(Asia/Kolkata)`, `(America/New_York)`
 - US abbreviations: `(EST)`, `(PST)`, `(CST)`, `(MST)` and daylight variants
