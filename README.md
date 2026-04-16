@@ -47,6 +47,10 @@ set -g history-limit 50000
 set -g default-terminal "screen-256color"
 set -sg escape-time 10
 
+# Forward terminal focus events so claude-code can re-render cleanly
+# (silences the "tmux focus events off" warning at startup).
+set -g focus-events on
+
 # Mouse drag selection copies to system clipboard (macOS)
 # Tip: hold Option (⌥) while dragging for native terminal selection instead
 bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
