@@ -84,3 +84,41 @@ pub fn kill_session(session_name: &str) -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+
+/// Get the session name that owns a given pane.
+pub fn session_for_pane(pane: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "-t", pane, "#{session_name}"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Set the @sigue_state user option on a session. Status bar displays
+/// this via `#{@sigue_state}`. Empty string clears it.
+pub fn set_sigue_state(session: &str, state: &str) {
+    let _ = Command::new("tmux")
+        .args(["set-option", "-t", session, "@sigue_state", state])
+        .status();
+}
+
+/// Configure a session's status bar to show sigue state.
+/// Shows state (with a visible prefix when active) + time on the right.
+pub fn configure_status_bar(session: &str) {
+    // status-right shows sigue state (yellow when active) then time
+    let status_right = "#{?#{==:#{@sigue_state},},,#[fg=black,bg=yellow,bold] #{@sigue_state} #[default] }%H:%M";
+    let cmds: &[&[&str]] = &[
+        &["set-option", "-t", session, "status", "on"],
+        &["set-option", "-t", session, "status-right-length", "120"],
+        &["set-option", "-t", session, "status-right", status_right],
+        &["set-option", "-t", session, "status-interval", "5"],
+        &["set-option", "-t", session, "@sigue_state", ""],
+    ];
+    for args in cmds {
+        let _ = Command::new("tmux").args(*args).status();
+    }
+}

@@ -110,8 +110,43 @@ fn run_print_mode(args: &[String]) -> ExitCode {
 
 // ── Interactive mode: monitor tmux pane in background ──
 
+/// Sleep for `total_secs`, updating the tmux status bar countdown every 5s.
+/// Also checks `pid` periodically — bails early if Claude exits.
+fn countdown_sleep(total_secs: u64, session: &Option<String>, label: &str, pid: u32) {
+    if total_secs == 0 {
+        return;
+    }
+    let start = std::time::Instant::now();
+    loop {
+        let elapsed = start.elapsed().as_secs();
+        if elapsed >= total_secs {
+            break;
+        }
+        let remaining = total_secs - elapsed;
+        if let Some(s) = session {
+            tmux::set_sigue_state(s, &format!("{label} {}", format_duration(remaining)));
+        }
+        if !tmux::process_alive(pid) {
+            return;
+        }
+        let tick = 5.min(total_secs - elapsed);
+        thread::sleep(Duration::from_secs(tick));
+    }
+}
+
+fn format_duration(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
 fn run_monitor(pane: &str, pid: u32) {
     let config = Config::load();
+    let session = tmux::session_for_pane(pane);
     let mut consecutive_retries = 0u32;
     let mut consecutive_errors = 0u32;
     let mut clean_polls = 0u32;
@@ -125,6 +160,12 @@ fn run_monitor(pane: &str, pid: u32) {
     // and reset the backoff. At default 5s poll interval, 6 polls = 30s of
     // clean output means Claude is working again.
     let clean_polls_to_reset = 6u32;
+
+    let set_state = |state: &str| {
+        if let Some(s) = &session {
+            tmux::set_sigue_state(s, state);
+        }
+    };
 
     logger::cleanup_old_logs(7);
     slog!("Monitor started (pane={pane}, pid={pid})");
@@ -156,6 +197,7 @@ fn run_monitor(pane: &str, pid: u32) {
             if detect_rate_limit(&text).is_none() || wait_polls >= max_wait_polls {
                 waiting = false;
                 wait_polls = 0;
+                set_state("");
             }
             thread::sleep(Duration::from_secs(config.poll_interval_secs));
             continue;
@@ -169,6 +211,7 @@ fn run_monitor(pane: &str, pid: u32) {
                         "Claude recovered. Resetting backoff (was at attempt {consecutive_retries})."
                     );
                     consecutive_retries = 0;
+                    set_state("");
                 }
                 thread::sleep(Duration::from_secs(config.poll_interval_secs));
             }
@@ -180,17 +223,21 @@ fn run_monitor(pane: &str, pid: u32) {
                         "Max consecutive retries ({}) reached. Monitor stopping.",
                         config.max_retries
                     );
+                    set_state("sigue: max retries reached");
                     return;
                 }
 
-                let wait_secs = match detection.kind {
+                let max = config.max_retries;
+                let (wait_secs, label) = match detection.kind {
                     RateLimitKind::ServerThrottle => {
                         let backoff = config.throttle_backoff(consecutive_retries);
                         slog!(
-                            "Server throttle. Backoff {backoff}s (attempt {consecutive_retries}/{}).",
-                            config.max_retries
+                            "Server throttle. Backoff {backoff}s (attempt {consecutive_retries}/{max})."
                         );
-                        backoff
+                        (
+                            backoff,
+                            format!("sigue: throttle retry {consecutive_retries}/{max} in"),
+                        )
                     }
                     RateLimitKind::AccountLimit => {
                         let secs = time::parse_wait_seconds(
@@ -200,19 +247,24 @@ fn run_monitor(pane: &str, pid: u32) {
                         );
                         let msg = detection.message.as_deref().unwrap_or("unknown reset time");
                         slog!(
-                            "Account limit: {msg}. Waiting {secs}s (attempt {consecutive_retries}/{}).",
-                            config.max_retries
+                            "Account limit: {msg}. Waiting {secs}s (attempt {consecutive_retries}/{max})."
                         );
-                        secs
+                        (
+                            secs,
+                            format!("sigue: limit retry {consecutive_retries}/{max} in"),
+                        )
                     }
                 };
 
-                thread::sleep(Duration::from_secs(wait_secs));
+                countdown_sleep(wait_secs, &session, &label, pid);
 
                 if !tmux::process_alive(pid) {
                     return;
                 }
 
+                set_state(&format!(
+                    "sigue: retrying {consecutive_retries}/{max}..."
+                ));
                 tmux::send_keys(pane, &config.retry_message);
                 waiting = true;
                 wait_polls = 0;
@@ -270,6 +322,8 @@ fn run_in_new_tmux_session(args: &[String]) -> ExitCode {
         eprintln!("[sigue] Failed to create tmux session: {e}");
         return ExitCode::from(1);
     }
+
+    tmux::configure_status_bar(&session_name);
 
     match tmux::attach_session(&session_name) {
         Ok(status) => ExitCode::from(status.code().unwrap_or(0) as u8),
