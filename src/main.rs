@@ -38,6 +38,7 @@ macro_rules! elog {
 
 fn run_print_mode(args: &[String]) -> ExitCode {
     let config = Config::load();
+    let custom_patterns = config.compile_custom_patterns();
     let claude_bin = find_claude_binary();
     let mut retries = 0u32;
 
@@ -63,7 +64,7 @@ fn run_print_mode(args: &[String]) -> ExitCode {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let combined = format!("{stdout}{stderr}");
 
-        match detect_rate_limit(&combined) {
+        match detect_rate_limit(&combined, &custom_patterns) {
             None => {
                 print!("{stdout}");
                 eprint!("{stderr}");
@@ -150,6 +151,7 @@ fn format_duration(secs: u64) -> String {
 
 fn run_monitor(pane: &str, pid: u32) {
     let config = Config::load();
+    let custom_patterns = config.compile_custom_patterns();
     let session = tmux::session_for_pane(pane);
     let mut consecutive_retries = 0u32;
     let mut consecutive_errors = 0u32;
@@ -198,7 +200,7 @@ fn run_monitor(pane: &str, pid: u32) {
 
         if waiting {
             wait_polls += 1;
-            if detect_rate_limit(&text).is_none() || wait_polls >= max_wait_polls {
+            if detect_rate_limit(&text, &custom_patterns).is_none() || wait_polls >= max_wait_polls {
                 waiting = false;
                 wait_polls = 0;
                 set_state("");
@@ -207,7 +209,7 @@ fn run_monitor(pane: &str, pid: u32) {
             continue;
         }
 
-        match detect_rate_limit(&text) {
+        match detect_rate_limit(&text, &custom_patterns) {
             None => {
                 clean_polls += 1;
                 if clean_polls >= clean_polls_to_reset && consecutive_retries > 0 {
@@ -393,6 +395,7 @@ fn print_help() {
     eprintln!("  retry_message        — what to send (default: \"continue\")");
     eprintln!("  throttle_base_secs   — initial backoff for 2b errors (default: 30)");
     eprintln!("  throttle_max_secs    — max backoff cap (default: 600)");
+    eprintln!("  custom_patterns      — extra regex patterns to detect (default: [])");
 }
 
 fn list_sigue_sessions() -> Vec<String> {

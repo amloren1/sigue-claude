@@ -131,6 +131,22 @@ Optional. Create `~/.sigue-claude.json`:
 | `retry_message` | `"continue"` | Message sent to resume the session |
 | `throttle_base_secs` | `30` | Initial backoff for server throttles (doubles each retry) |
 | `throttle_max_secs` | `600` | Maximum backoff cap (seconds) |
+| `custom_patterns` | `[]` | Extra regex patterns (case-insensitive) treated as rate limits |
+
+### Custom patterns
+
+If Claude changes its error wording and the built-in patterns miss it, add your own. Each entry is a regex applied case-insensitively to the pane output. Matches are treated as account-limit detections — sigue parses any nearby reset time, or falls back to `fallback_wait_secs`.
+
+```json
+{
+  "custom_patterns": [
+    "quota.*exhausted",
+    "too many tokens consumed today"
+  ]
+}
+```
+
+Invalid regexes are logged and skipped — a typo won't kill the monitor.
 
 ## License
 

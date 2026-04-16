@@ -1,4 +1,13 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+/// Build a `tmux` command with stdout/stderr silenced. Every helper in
+/// this module uses this so tmux chatter (warnings, "no such client",
+/// etc.) never leaks into claude's TUI pane.
+fn tmux() -> Command {
+    let mut cmd = Command::new("tmux");
+    cmd.stderr(Stdio::null());
+    cmd
+}
 
 /// Check if we're currently inside a tmux session.
 pub fn is_inside_tmux() -> bool {
@@ -7,7 +16,7 @@ pub fn is_inside_tmux() -> bool {
 
 /// Get the current tmux pane identifier (e.g. "%3").
 pub fn current_pane() -> Option<String> {
-    let output = Command::new("tmux")
+    let output = tmux()
         .args(["display-message", "-p", "#{pane_id}"])
         .output()
         .ok()?;
@@ -20,7 +29,7 @@ pub fn current_pane() -> Option<String> {
 
 /// Capture the visible text of a tmux pane.
 pub fn capture_pane(pane: &str) -> Option<String> {
-    let output = Command::new("tmux")
+    let output = tmux()
         .args(["capture-pane", "-t", pane, "-p"])
         .output()
         .ok()?;
@@ -33,7 +42,7 @@ pub fn capture_pane(pane: &str) -> Option<String> {
 
 /// Send keystrokes to a tmux pane.
 pub fn send_keys(pane: &str, text: &str) {
-    let _ = Command::new("tmux")
+    let _ = tmux()
         .args(["send-keys", "-t", pane, text, "Enter"])
         .status();
 }
@@ -42,6 +51,7 @@ pub fn send_keys(pane: &str, text: &str) {
 pub fn process_alive(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
@@ -64,7 +74,7 @@ pub fn attach_session(session_name: &str) -> std::io::Result<std::process::ExitS
 
 /// List all tmux session names. Returns empty vec if tmux not running.
 pub fn list_sessions() -> Vec<String> {
-    let output = Command::new("tmux")
+    let output = tmux()
         .args(["list-sessions", "-F", "#{session_name}"])
         .output();
     match output {
@@ -78,7 +88,7 @@ pub fn list_sessions() -> Vec<String> {
 
 /// Kill a tmux session by name. Returns true on success.
 pub fn kill_session(session_name: &str) -> bool {
-    Command::new("tmux")
+    tmux()
         .args(["kill-session", "-t", session_name])
         .status()
         .map(|s| s.success())
@@ -87,7 +97,7 @@ pub fn kill_session(session_name: &str) -> bool {
 
 /// Get the session name that owns a given pane.
 pub fn session_for_pane(pane: &str) -> Option<String> {
-    let output = Command::new("tmux")
+    let output = tmux()
         .args(["display-message", "-p", "-t", pane, "#{session_name}"])
         .output()
         .ok()?;
@@ -102,7 +112,7 @@ pub fn session_for_pane(pane: &str) -> Option<String> {
 /// Used to verify claude is still in focus before sending retry keys
 /// (prevents sending "continue" to a shell if the user suspended claude).
 pub fn pane_current_command(pane: &str) -> Option<String> {
-    let output = Command::new("tmux")
+    let output = tmux()
         .args(["display-message", "-p", "-t", pane, "#{pane_current_command}"])
         .output()
         .ok()?;
@@ -113,16 +123,14 @@ pub fn pane_current_command(pane: &str) -> Option<String> {
     }
 }
 
-/// Set the @sigue_state user option on a session and force a redraw
-/// so the countdown in the status bar updates immediately.
+/// Set the @sigue_state user option on a session. The status bar is
+/// configured with `status-interval=1`, so tmux will pick up the change
+/// on the next tick (≤1s). We don't call `refresh-client` because it
+/// targets clients (not sessions) and errors out when no client is attached
+/// — polluting the TUI with "can't find client" messages.
 pub fn set_sigue_state(session: &str, state: &str) {
-    let _ = Command::new("tmux")
+    let _ = tmux()
         .args(["set-option", "-t", session, "@sigue_state", state])
-        .status();
-    // Force an immediate redraw so the countdown appears live instead of
-    // waiting for the status-interval tick.
-    let _ = Command::new("tmux")
-        .args(["refresh-client", "-S", "-t", session])
         .status();
 }
 
@@ -135,13 +143,12 @@ pub fn configure_status_bar(session: &str) {
         &["set-option", "-t", session, "status", "on"],
         &["set-option", "-t", session, "status-right-length", "120"],
         &["set-option", "-t", session, "status-right", status_right],
-        // 1s interval so the %H:%M clock and any format changes tick
-        // visibly. The set_sigue_state helper also forces an explicit
-        // redraw, so the countdown is snappy.
+        // 1s interval so the %H:%M clock and the @sigue_state countdown
+        // tick visibly without any explicit refresh-client calls.
         &["set-option", "-t", session, "status-interval", "1"],
         &["set-option", "-t", session, "@sigue_state", ""],
     ];
     for args in cmds {
-        let _ = Command::new("tmux").args(*args).status();
+        let _ = tmux().args(*args).status();
     }
 }

@@ -56,13 +56,29 @@ pub struct RateLimitDetection {
     pub message: Option<String>,
 }
 
-/// Check if text indicates a rate limit. Returns detection info or None.
-pub fn detect_rate_limit(text: &str) -> Option<RateLimitDetection> {
+/// Check if text indicates a rate limit. Custom patterns (user-provided
+/// via config) are evaluated first and treated as account limits — if a
+/// reset time is nearby, it's used; otherwise the fallback wait applies.
+pub fn detect_rate_limit(text: &str, custom: &[Regex]) -> Option<RateLimitDetection> {
     let clean = strip_ansi(text);
     let lines: Vec<&str> = clean.lines().collect();
     let full = lines.join("\n");
 
-    // Check standalone patterns first (Type 2b, 429, etc.)
+    // Custom user patterns — highest priority so users can override behavior
+    for pat in custom.iter() {
+        if pat.is_match(&full) {
+            let message = lines
+                .iter()
+                .find(|l| pat.is_match(l))
+                .map(|l| l.trim().to_string());
+            return Some(RateLimitDetection {
+                kind: RateLimitKind::AccountLimit,
+                message,
+            });
+        }
+    }
+
+    // Check standalone patterns (Type 2b, 429, etc.)
     for pat in STANDALONE_PATTERNS.iter() {
         if pat.is_match(&full) {
             let message = lines.iter().find(|l| pat.is_match(l)).map(|l| l.trim().to_string());
@@ -106,21 +122,21 @@ mod tests {
     #[test]
     fn detects_type_2b() {
         let text = "API Error: Server is temporarily limiting requests (not your usage limit) · Type 2b rate limited. Please try again later.";
-        let result = detect_rate_limit(text).unwrap();
+        let result = detect_rate_limit(text, &[]).unwrap();
         assert_eq!(result.kind, RateLimitKind::ServerThrottle);
     }
 
     #[test]
     fn detects_type_2b_multiline() {
         let text = "Some output\n⚠ API Error: Server is temporarily limiting requests\n· Type 2b rate limited. Please try again later.\nMore text";
-        let result = detect_rate_limit(text).unwrap();
+        let result = detect_rate_limit(text, &[]).unwrap();
         assert_eq!(result.kind, RateLimitKind::ServerThrottle);
     }
 
     #[test]
     fn detects_account_limit_with_reset() {
         let text = "⚠ You've hit your 5-hour limit\n· resets 3pm (UTC)";
-        let result = detect_rate_limit(text).unwrap();
+        let result = detect_rate_limit(text, &[]).unwrap();
         assert_eq!(result.kind, RateLimitKind::AccountLimit);
         assert!(result.message.unwrap().contains("resets 3pm"));
     }
@@ -128,27 +144,46 @@ mod tests {
     #[test]
     fn detects_limit_with_try_again() {
         let text = "Usage limit reached\nTry again in 2 hours";
-        let result = detect_rate_limit(text).unwrap();
+        let result = detect_rate_limit(text, &[]).unwrap();
         assert_eq!(result.kind, RateLimitKind::AccountLimit);
     }
 
     #[test]
     fn no_false_positive_on_normal_text() {
         let text = "Here is some code that processes rate calculations\nand limits the output to 100 rows.";
-        assert!(detect_rate_limit(text).is_none());
+        assert!(detect_rate_limit(text, &[]).is_none());
     }
 
     #[test]
     fn strips_ansi() {
         let text = "\x1b[31mType 2b rate limited\x1b[0m";
-        let result = detect_rate_limit(text).unwrap();
+        let result = detect_rate_limit(text, &[]).unwrap();
         assert_eq!(result.kind, RateLimitKind::ServerThrottle);
     }
 
     #[test]
     fn detects_429() {
         let text = "Error 429 Too Many Requests";
-        let result = detect_rate_limit(text).unwrap();
+        let result = detect_rate_limit(text, &[]).unwrap();
         assert_eq!(result.kind, RateLimitKind::ServerThrottle);
+    }
+
+    #[test]
+    fn detects_custom_pattern() {
+        let text = "Some output\nquota exhausted for this tier\nmore text";
+        let custom = vec![Regex::new(r"(?i)quota exhausted").unwrap()];
+        let result = detect_rate_limit(text, &custom).unwrap();
+        assert_eq!(result.kind, RateLimitKind::AccountLimit);
+        assert!(result.message.unwrap().contains("quota exhausted"));
+    }
+
+    #[test]
+    fn custom_pattern_takes_precedence() {
+        // Text matches a standalone server-throttle pattern, but also the
+        // custom pattern. Custom should win.
+        let text = "Type 2b rate limited — this is our override case";
+        let custom = vec![Regex::new(r"(?i)override case").unwrap()];
+        let result = detect_rate_limit(text, &custom).unwrap();
+        assert_eq!(result.kind, RateLimitKind::AccountLimit);
     }
 }

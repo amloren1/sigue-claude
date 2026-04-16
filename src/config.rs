@@ -1,3 +1,4 @@
+use regex::Regex;
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -18,6 +19,9 @@ pub struct Config {
     pub throttle_base_secs: u64,
     /// Max backoff cap for server throttles (seconds)
     pub throttle_max_secs: u64,
+    /// Extra regex patterns (case-insensitive) that count as rate limits.
+    /// Use when Claude's messaging changes and the built-in patterns miss it.
+    pub custom_patterns: Vec<String>,
 }
 
 impl Default for Config {
@@ -30,6 +34,7 @@ impl Default for Config {
             retry_message: "continue".to_string(),
             throttle_base_secs: 30,
             throttle_max_secs: 600, // 10 min cap
+            custom_patterns: Vec::new(),
         }
     }
 }
@@ -50,6 +55,21 @@ impl Config {
     pub fn throttle_backoff(&self, attempt: u32) -> u64 {
         let backoff = self.throttle_base_secs * 2u64.pow(attempt.saturating_sub(1));
         backoff.min(self.throttle_max_secs)
+    }
+
+    /// Compile user-provided patterns once at startup. Bad patterns are
+    /// logged and skipped — we don't want a typo to kill the monitor.
+    pub fn compile_custom_patterns(&self) -> Vec<Regex> {
+        self.custom_patterns
+            .iter()
+            .filter_map(|p| match Regex::new(&format!("(?i){p}")) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    eprintln!("[sigue] Skipping bad custom pattern '{p}': {e}");
+                    None
+                }
+            })
+            .collect()
     }
 }
 
