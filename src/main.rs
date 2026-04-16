@@ -110,7 +110,8 @@ fn run_print_mode(args: &[String]) -> ExitCode {
 
 // ── Interactive mode: monitor tmux pane in background ──
 
-/// Sleep for `total_secs`, updating the tmux status bar countdown every 5s.
+/// Sleep for `total_secs`, updating the tmux status bar countdown every
+/// second (short waits) or every 10s (long waits >2min, to avoid churn).
 /// Also checks `pid` periodically — bails early if Claude exits.
 fn countdown_sleep(total_secs: u64, session: &Option<String>, label: &str, pid: u32) {
     if total_secs == 0 {
@@ -129,7 +130,10 @@ fn countdown_sleep(total_secs: u64, session: &Option<String>, label: &str, pid: 
         if !tmux::process_alive(pid) {
             return;
         }
-        let tick = 5.min(total_secs - elapsed);
+        // Short remaining → tick every 1s (snappy countdown in status bar).
+        // Long remaining → tick every 10s (less churn during hour-long waits).
+        let tick = if remaining > 120 { 10 } else { 1 };
+        let tick = (tick as u64).min(total_secs - elapsed);
         thread::sleep(Duration::from_secs(tick));
     }
 }
@@ -260,6 +264,27 @@ fn run_monitor(pane: &str, pid: u32) {
 
                 if !tmux::process_alive(pid) {
                     return;
+                }
+
+                // Safety: only send retry keys if claude is still the
+                // foreground process in the pane. If the user suspended
+                // claude (Ctrl-Z) or switched tasks, sending "continue"
+                // would go to a shell instead — likely harmless but wrong.
+                let fg = tmux::pane_current_command(pane);
+                let looks_like_claude = matches!(
+                    fg.as_deref(),
+                    Some("claude" | "node" | "sigue-claude")
+                );
+                if !looks_like_claude {
+                    let got = fg.as_deref().unwrap_or("<unknown>");
+                    slog!(
+                        "Foreground is '{got}', not claude — skipping retry. Will re-check on next poll."
+                    );
+                    set_state(&format!("sigue: paused (fg={got})"));
+                    // Don't set waiting=true — stay in active detection
+                    // mode so we try again once claude is back in focus.
+                    thread::sleep(Duration::from_secs(config.poll_interval_secs));
+                    continue;
                 }
 
                 set_state(&format!(

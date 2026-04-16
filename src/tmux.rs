@@ -98,11 +98,31 @@ pub fn session_for_pane(pane: &str) -> Option<String> {
     }
 }
 
-/// Set the @sigue_state user option on a session. Status bar displays
-/// this via `#{@sigue_state}`. Empty string clears it.
+/// Get the name of the command currently running in the foreground of a pane.
+/// Used to verify claude is still in focus before sending retry keys
+/// (prevents sending "continue" to a shell if the user suspended claude).
+pub fn pane_current_command(pane: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "-t", pane, "#{pane_current_command}"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Set the @sigue_state user option on a session and force a redraw
+/// so the countdown in the status bar updates immediately.
 pub fn set_sigue_state(session: &str, state: &str) {
     let _ = Command::new("tmux")
         .args(["set-option", "-t", session, "@sigue_state", state])
+        .status();
+    // Force an immediate redraw so the countdown appears live instead of
+    // waiting for the status-interval tick.
+    let _ = Command::new("tmux")
+        .args(["refresh-client", "-S", "-t", session])
         .status();
 }
 
@@ -115,7 +135,10 @@ pub fn configure_status_bar(session: &str) {
         &["set-option", "-t", session, "status", "on"],
         &["set-option", "-t", session, "status-right-length", "120"],
         &["set-option", "-t", session, "status-right", status_right],
-        &["set-option", "-t", session, "status-interval", "5"],
+        // 1s interval so the %H:%M clock and any format changes tick
+        // visibly. The set_sigue_state helper also forces an explicit
+        // redraw, so the countdown is snappy.
+        &["set-option", "-t", session, "status-interval", "1"],
         &["set-option", "-t", session, "@sigue_state", ""],
     ];
     for args in cmds {
