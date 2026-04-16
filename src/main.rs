@@ -149,6 +149,23 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
+/// Normalize a pane snapshot for activity detection: strip ANSI escapes
+/// and remove digits/colons so claude's own rate-limit countdown (which
+/// ticks every second) doesn't look like new content. What remains is
+/// the structural text — changes to that strongly suggest user input
+/// or claude actually producing output.
+fn fingerprint_pane(text: &str) -> String {
+    patterns::strip_ansi(text)
+        .chars()
+        .filter(|c| !c.is_ascii_digit() && *c != ':')
+        .collect::<String>()
+        .lines()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn run_monitor(pane: &str, pid: u32) {
     let config = Config::load();
     let custom_patterns = config.compile_custom_patterns();
@@ -262,25 +279,41 @@ fn run_monitor(pane: &str, pid: u32) {
                     }
                 };
 
+                // Baseline: snapshot the pane just before we start waiting.
+                // If the pane's "structure" (ignoring digit-only changes like
+                // claude's own ticking countdown) differs by the end of the
+                // wait, the user likely typed/sent something — we should not
+                // pile a "continue" on top of whatever they did.
+                let pre_wait = tmux::capture_pane(pane).unwrap_or_default();
+                let pre_fingerprint = fingerprint_pane(&pre_wait);
+
                 countdown_sleep(wait_secs, &session, &label, pid);
 
                 if !tmux::process_alive(pid) {
                     return;
                 }
 
-                // Re-check the pane: while we were waiting, claude may have
-                // recovered on its own, or the user may have resumed the
-                // session manually. Sending "continue" now would be spurious
-                // input into whatever claude is currently doing.
                 let fresh = tmux::capture_pane(pane).unwrap_or_default();
+
+                // Check 1: claude recovered on its own (or user resumed and
+                // claude started responding) — rate limit banner is gone.
                 if detect_rate_limit(&fresh, &custom_patterns).is_none() {
                     slog!(
                         "Rate limit gone after wait — claude recovered on its own, skipping retry."
                     );
                     set_state("");
-                    // Don't set waiting=true — nothing to wait for. Treat
-                    // this as a normal recovery so the next detection
-                    // starts fresh.
+                    continue;
+                }
+
+                // Check 2: rate limit is still visible, but the user typed
+                // or sent something during the wait. Structural fingerprint
+                // differs from baseline — cancel this retry to avoid
+                // stacking "continue" on top of user input.
+                if fingerprint_pane(&fresh) != pre_fingerprint {
+                    slog!(
+                        "User activity detected during wait — cancelling this retry."
+                    );
+                    set_state("");
                     continue;
                 }
 
